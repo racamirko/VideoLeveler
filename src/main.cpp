@@ -50,6 +50,8 @@
 using namespace std;
 using namespace cv;
 
+void skinDetectionGM( Mat& _frameMat, Mat& _resMask );
+
 int main(int argc, char *argv[])
 {
     google::InitGoogleLogging(argv[0]);
@@ -66,14 +68,81 @@ int main(int argc, char *argv[])
     }
 
     /*      processing      */
-    double curFrame = vSrc.get(CV_CAP_PROP_POS_FRAMES);
+    double curFrameNo = vSrc.get(CV_CAP_PROP_POS_FRAMES);
     double maxFrames = vSrc.get(CV_CAP_PROP_FRAME_COUNT);
-    while(curFrame < maxFrames){
-        Mat curFrame;
+    int skipCount = vSrc.get(CV_CAP_PROP_FPS) * 20,
+        curSkipNo = 0;
+    Mat curFrame, curMask;
+    while(curFrameNo < maxFrames){
         vSrc >> curFrame;
+        if( curSkipNo++ < skipCount )
+            continue;
+        curSkipNo = 0;
+        skinDetectionGM(curFrame, curMask);
+//        imshow("curMaskWnd",curMask);
+        curFrame.setTo(Scalar(0.0f, 255.0f, 0.0f), curMask);
         imshow("testwnd",curFrame);
-        waitKey(100);
+        waitKey(10);
     }
 
     return 0;
+}
+
+/*
+ *  Outputs the mask of skin-colored regions of the image based on the paper
+ *          Automatic Feature Construction and a Simple Rule Induction Algorithm
+ *          for Skin Detection
+ *      G. Gomez, E. F. Morales (2002)
+ *
+ *
+ */
+void skinDetectionGM( Mat& _frameMat, Mat& _resMask ){
+    _resMask = _frameMat.clone();
+    _resMask.setTo(Scalar(0)); // TEMPORARY !!
+    // normalizing the image
+    Mat curFrameFloat; _frameMat.convertTo(curFrameFloat, CV_32FC3);
+    vector<Mat> channels;
+    split(curFrameFloat, channels);
+    Mat sumValues = Mat::zeros(_frameMat.rows, _frameMat.cols, CV_32FC1);
+    for( Mat& ch : channels )
+        sumValues = sumValues + ch;
+    for( Mat& ch : channels )
+        ch = ch / sumValues;
+    merge(channels, curFrameFloat);
+    Mat sumAllChannels = channels[0] + channels[1] + channels[2];
+    // implementing the rules
+    // rule 1: b/g < 1.249
+    Mat rule1Binary;
+    {
+        Mat rule1 = channels[0] / channels[1];
+        inRange(rule1, Scalar(0.0f), Scalar(1.249f), rule1Binary );
+    }
+    // rule 2: (r+g+b)/(3*r) > 0.696
+    Mat rule2Binary;
+    {
+        Mat rule2 = Mat::zeros(_frameMat.rows, _frameMat.cols, CV_32FC1);
+        rule2 = ( sumAllChannels )/ ( 3.0f*channels[2] );
+        inRange(rule2, Scalar(0.696f), Scalar(1000.0f), rule2Binary );
+    }
+    // rule 3: 1/3.0 - b/(r+g+b) > 0.014
+    Mat rule3Binary;
+    {
+        Mat constMat = Mat::zeros(_frameMat.rows, _frameMat.cols, CV_32FC1);
+        constMat.setTo(Scalar(1.0f/3.0f));
+        Mat rule3 = Mat::zeros(_frameMat.rows, _frameMat.cols, CV_32FC1);
+        rule3 = constMat - channels[0]/( sumAllChannels );
+        inRange(rule3, Scalar(0.014f), Scalar(1000.0f), rule3Binary);
+    }
+    // rule 4: g/(3*(r+g+b)) < 0.108
+    Mat rule4Binary;
+    {
+        Mat rule4 = Mat::zeros(_frameMat.rows, _frameMat.cols, CV_32FC1);
+        rule4 = channels[1] / ( 3.0f * sumAllChannels );
+        inRange(rule4, Scalar(0.0f), Scalar(0.108f), rule4Binary);
+    }
+    // show
+    // final mask
+    _resMask = rule1Binary & rule2Binary & rule3Binary & rule4Binary;
+//    imshow("normChanels", curFrameFloat);
+//    waitKey(10);
 }
